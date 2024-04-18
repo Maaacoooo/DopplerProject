@@ -9,3 +9,6 @@ Sensors:
 - SD Card Module
 - Sim800 Module
 
+## Pinning Guide
+
+![alt text](https://i.ibb.co/F6p78jV/Pinning-Guide.jpg)
