@@ -45,7 +45,7 @@ String DATA_TEXTMSG  = "";
 String DEFAULT_PHONE = "+639058208455"; //the default number where the system will send
 float ERR_PHLEVEL = 10.5;
 float ERR_TDS = 996;
-float ERR_TEMP = 40;
+int ERR_TEMP = 40;
 float ERR_WATERLEVEL = 350;
 
 // SENSOR DATA ////////////////////////////////////////////////////////////////////
