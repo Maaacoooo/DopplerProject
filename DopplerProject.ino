@@ -133,7 +133,12 @@ void updateSMSSerial() {
   }
 }
 
-void SendMessage(const char* phoneNumber, const char* message) {
+void SendMessage(String phoneNumber, String message) {
+
+  phoneNumber = phoneNumber.c_str();
+  message = message.c_str();
+
+
   SMS.print("AT+CMGS=\"");
   SMS.print(phoneNumber);
   SMS.println("\"");
