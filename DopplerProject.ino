@@ -27,6 +27,7 @@ Sensors:
 #define PIN_TDSSENSOR A2
 #define PIN_TEMPERATURE 57 //or A3
 #define PIN_SDC 53
+#define SMS Serial1
 //TIME MODULE //////////////////////
 // CLK -> 69 / A15 , DAT -> 68 / A14, Reset -> 67 / A13 //Analog pins converted to Digital Pins
 virtuabotixRTC myRTC(69, 68, 67); // If you change the wiring change the pins here also
@@ -35,8 +36,18 @@ virtuabotixRTC myRTC(69, 68, 67); // If you change the wiring change the pins he
 String DATA_DATETIME = ""; 
 String DATA_FILENAME = ""; 
 String DATA_TEXTLINE = "";
+String DATA_TEXTMSG  = "";
 
-File DATA_FILE;
+// ERROR FLAGS ////////////////////////////////////////////////////////////////////
+//This will determine the LOW / ALERT Values
+//Once Data is Below this, it will send a message
+
+String DEFAULT_PHONE = "+639058208455"; //the default number where the system will send
+float ERR_PHLEVEL = 10.5;
+float ERR_TDS = 996;
+float ERR_TEMP = 40;
+float ERR_WATERLEVEL = 350;
+
 // SENSOR DATA ////////////////////////////////////////////////////////////////////
 // WATERLEVEL //////////////////////
 int DATA_WATERLEVEL = 0;
@@ -52,6 +63,7 @@ int DATA_TEMP = 0;
 
 void setup() {
   Serial.begin(9600);
+
   gravityTds.setPin(PIN_TDSSENSOR);
   gravityTds.setAref(5.0);  
   gravityTds.setAdcRange(1024);  
@@ -73,45 +85,103 @@ void setup() {
   delay(3000);
 
   */
+  SMS.begin(9600);
+  SMS.println("AT"); //Once the handshake test is successful, it will back to OK
+  updateSMSSerial();
+  SMS.println("AT+CSQ"); //Signal quality test, value range is 0-31 , 31 is the best
+  updateSMSSerial();
+  SMS.println("AT+CCID"); //Read SIM information to confirm whether the SIM is plugged
+  updateSMSSerial();
+  SMS.println("AT+CREG?"); //Check whether it has registered in the network
+  updateSMSSerial();
+
 }
 
 void loop() {
   // Get current time
   getTime();
-  Serial.println(DATA_FILENAME);
-  Serial.println(DATA_DATETIME);
-
-  // Get water level
   getWaterLevel();
-  Serial.print("WATER LEVEL VAL: ");
-  Serial.print(DATA_WATERLEVEL);
-  Serial.print(" STATUS: ");
-  Serial.println(STR_WATERLEVEL);
-
-  // Get pH level
   getPH_Level();
-  Serial.print("PH_LEVEL: ");  
-  Serial.println(DATA_PHLEVEL, 2);
-
-  // Get temperature
   get_temperature();
-  Serial.print("Temperature: ");
-  Serial.print(DATA_TEMP);
-  Serial.println("C");
-
-  // Get TDS
   get_TDS();
-  Serial.print("TDS: ");
-  Serial.print(DATA_TDS, 0);
-  Serial.println(" ppm");
   
+  DataFormatter();
+  CheckNewSMS();
   TaskController();
+
+
+  Serial.println(DATA_TEXTMSG);
   Serial.println(DATA_TEXTLINE);
+  Serial.println(DATA_FILENAME);
 
   Serial.println("----------------------------------------");
+
   delay(1000);
 
+}
 
+// SMS ////////////////////////////////////////////////////////////////
+void updateSMSSerial() {
+  delay(500);
+  while (Serial.available()) 
+  {
+    SMS.write(Serial.read());//Forward what Serial received to Software Serial Port
+  }
+  while(SMS.available()) 
+  {
+    Serial.write(SMS.read());//Forward what Software Serial received to Serial Port
+  }
+}
+
+void SendMessage(const char* phoneNumber, const char* message) {
+  SMS.print("AT+CMGS=\"");
+  SMS.print(phoneNumber);
+  SMS.println("\"");
+  delay(500);
+  
+  SMS.print(message);
+  delay(500);
+  
+  SMS.write(26); // End message with CTRL+Z
+  delay(500);
+}
+
+
+void CheckNewSMS() {
+  SMS.println("AT+CMGL=\"REC UNREAD\""); // List unread messages
+  delay(500);
+  
+  while (SMS.available()) {
+    String response = SMS.readString();
+    if (response.indexOf("+CMGL:") != -1) {
+      // Extract phone number and message content
+      String phoneNumber = SMS.readStringUntil(',');
+      phoneNumber.trim();
+      SMS.readStringUntil('"'); // Skip additional info
+      String message = SMS.readStringUntil('"');
+      message.trim();
+      
+      // Print received message to Serial monitor
+      Serial.print("Message from: ");
+      Serial.println(phoneNumber);
+      Serial.print("Content: ");
+      Serial.println(message);
+      
+      // Delete the message from SIM memory
+      SMS.println("AT+CMGD=1,4");
+      delay(500);
+
+      SMS_Command(message, phoneNumber);
+    }
+  }
+}
+
+void SMS_Command(String message, String phoneNumber) {
+  if(message == "NOW") {
+        SendMessage(phoneNumber, DATA_TEXTMSG);
+  } else {
+    //ehh.. do nothing? 
+  }
 }
 
 // TIME BASED ACTIONS /////////////////////////////////////////////////
@@ -129,7 +199,7 @@ void getTime() {
   DATA_DATETIME.concat(":");
   DATA_DATETIME.concat(myRTC.seconds);
   
-
+  //Set Filename based on Date
   DATA_FILENAME = "DATA_";
   DATA_FILENAME.concat(myRTC.year); 
   DATA_FILENAME.concat("_");
@@ -139,10 +209,58 @@ void getTime() {
   DATA_FILENAME.concat(".txt");
 }
 
-int current_minute = 0; 
+// TASK CONTROLLER /////////////////////////////////////////////////////
+// The general purpose of the Task Controller is to handle all data-related
+// functionalities
+int sd_current_minute = 0; 
+int sms_current_minute = 0; 
 
 void TaskController() {
+  // Save Data every 5 Minutes based on Time. /////////////////////////
+  // e.g 10:00, 10:05, 10:10 etc..
+  if (myRTC.minutes % 5 == 0 && myRTC.minutes != sd_current_minute) {
+    sd_current_minute = myRTC.minutes; //used to save data only once
+    Serial.println("****TRIGGER MINUTES");
+    //Save Data to SD Card
+    //SaveData();
+  } 
 
+  if (myRTC.minutes != sms_current_minute) {
+    sms_current_minute = myRTC.minutes; //used to send only 1 sms per minute
+    Serial.println("****TRIGGER SMS ");
+
+    String message = "";
+
+    if(ERR_PHLEVEL >= DATA_PHLEVEL) {
+        message = "ALERT! CHECK PH LEVEL! \n";
+        message.concat(DATA_TEXTMSG);
+        SendMessage(DEFAULT_PHONE, message);
+    }
+
+    if(ERR_TDS >= DATA_TDS) {
+        message = "ALERT! CHECK TDS! \n";
+        message.concat(DATA_TEXTMSG);
+        SendMessage(DEFAULT_PHONE, message);
+    }
+
+    if(ERR_TEMP > DATA_TEMP) {
+        message = "ALERT! WATER TEMP! \n";
+        message.concat(DATA_TEXTMSG);
+        SendMessage(DEFAULT_PHONE, message);
+    }
+
+    if(ERR_WATERLEVEL >= DATA_WATERLEVEL) {
+        message = "ALERT! WATERLEVEL! \n";
+        message.concat(DATA_TEXTMSG);
+        SendMessage(DEFAULT_PHONE, message);
+    }
+    
+  } 
+
+
+}
+
+void DataFormatter() {
   // Compile Data to TextLine /////////////////////////////////////////
   // Compiled Data Structure:
   //  DATE_TIME waterlevel;temperature;ph_level;tds_level;
@@ -166,14 +284,23 @@ void TaskController() {
   DATA_TEXTLINE.concat(DATA_TDS);
   DATA_TEXTLINE.concat(" PPM");
 
-  // Save Data every 5 Minutes based on Time. /////////////////////////
-  // e.g 10:00, 10:05, 10:10 etc..
-  if (myRTC.minutes % 5 == 0 && myRTC.minutes != current_minute) {
-    current_minute = myRTC.minutes; //used to save data only once
-    Serial.println("****TRIGGER MINUTES");
-    //Save Data to SD Card
-    //SaveData();
-  } 
+  /////////////////////////////////////////////////////
+  DATA_TEXTMSG = DATA_DATETIME;
+  DATA_TEXTMSG.concat("\n WaterLevel: ");
+  DATA_TEXTMSG.concat(DATA_WATERLEVEL);
+  DATA_TEXTMSG.concat(" - ");
+  DATA_TEXTMSG.concat(STR_WATERLEVEL);
+  
+  DATA_TEXTMSG.concat("\n TEMP: ");
+  DATA_TEXTMSG.concat(DATA_TEMP);
+  DATA_TEXTMSG.concat(" C");
+
+  DATA_TEXTMSG.concat("\n PH Level: ");
+  DATA_TEXTMSG.concat(DATA_PHLEVEL);
+
+  DATA_TEXTMSG.concat("\n TDS: ");
+  DATA_TEXTMSG.concat(DATA_TDS);
+  DATA_TEXTMSG.concat(" PPM");
 }
 
 void SaveData() {
